@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 import { User } from '../models/User.js'
 import { Order } from '../models/Order.js'
 import { Address } from '../models/Address.js'
+import { customerRoleFilter } from '../utils/adminRoles.js'
 
 function escapeRegex(text) {
   return String(text).replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')
@@ -31,9 +32,9 @@ export async function getAdminCustomers(req, res, next) {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20))
     const skip = (pageNum - 1) * limitNum
 
-    // Base match criteria: exclude admin users
+    // Base match criteria: exclude staff (Admin / Super Admin)
     const matchCriteria = {
-      role: { $ne: 'ADMIN' },
+      ...customerRoleFilter(),
     }
 
     // Status filter

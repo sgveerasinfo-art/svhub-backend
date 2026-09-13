@@ -99,7 +99,7 @@ export async function recordAuditLog({
         finalActorId = finalActorId || req.user._id || req.user.id
         finalActorEmail = finalActorEmail || req.user.email
         const role = String(req.user.role || '').toUpperCase()
-        if (role === 'ADMIN') {
+        if (role === 'ADMIN' || role === 'SUPER_ADMIN') {
           finalActorType = 'ADMIN'
         } else if (!actorType || actorType === 'SYSTEM' || actorType === 'ANONYMOUS') {
           finalActorType = 'CUSTOMER'

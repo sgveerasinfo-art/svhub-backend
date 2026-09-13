@@ -59,7 +59,8 @@ export async function cancelOrder({
 
   // 3. Admin-specific validation
   if (normRole === 'admin') {
-    const isAdmin = String(user.role || '').toUpperCase() === 'ADMIN'
+    const role = String(user.role || '').toUpperCase()
+    const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN'
     if (!isAdmin) {
       return {
         success: false,

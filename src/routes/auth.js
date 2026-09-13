@@ -1,5 +1,4 @@
 import bcrypt from 'bcryptjs'
-import crypto from 'node:crypto'
 import { Router } from 'express'
 import jwt from 'jsonwebtoken'
 import { User } from '../models/User.js'
@@ -12,6 +11,7 @@ import {
   authPasswordResetRateLimiter,
 } from '../middleware/rateLimiter.js'
 import { recordAuditLog } from '../services/auditLogger.js'
+import { env } from '../config/env.js'
 import {
   emailError,
   fail,
@@ -23,9 +23,11 @@ import {
   passwordError,
   phoneError,
 } from '../utils/auth.js'
+import { actorTypeForRole, isStaffRole } from '../utils/adminRoles.js'
+import { createSecureToken, hashSecureToken, resetTokenExpiry } from '../utils/secureTokens.js'
+import { isEmailDeliveryConfigured, sendPasswordResetEmail } from '../services/emailService.js'
 
 const authRouter = Router()
-const TOKEN_TTL_MS = 30 * 60 * 1000
 const SALT_ROUNDS = 12
 
 function signUser(user) {
@@ -33,18 +35,15 @@ function signUser(user) {
     {
       sub: String(user._id),
       role: (user.role || 'CUSTOMER').toUpperCase(),
+      av: Number(user.authVersion || 0),
     },
     jwtSecret(),
     { expiresIn: '7d' },
   )
 }
 
-function hashToken(token) {
-  return crypto.createHash('sha256').update(token).digest('hex')
-}
-
-function createResetToken() {
-  return crypto.randomBytes(32).toString('hex')
+function clientOrigin() {
+  return String(env.CLIENT_URL || env.CLIENT_ORIGIN || 'https://www.svhub.shop').replace(/\/$/, '')
 }
 
 // 1. Register new customer account
@@ -173,15 +172,19 @@ authRouter.post('/login', authLoginRateLimiter, async (req, res, next) => {
       )
     }
 
+    user.lastLoginAt = new Date()
+    await user.save()
+
     recordAuditLog({
       action: 'LOGIN_SUCCESS',
-      actorType: String(user.role || '').toUpperCase() === 'ADMIN' ? 'ADMIN' : 'CUSTOMER',
+      actorType: actorTypeForRole(user.role),
       actorId: user._id,
       actorEmail: user.email,
       resourceType: 'USER',
       resourceId: String(user._id),
       result: 'SUCCESS',
       req,
+      metadata: isStaffRole(user.role) ? { adminLogin: true, role: user.role } : undefined,
     })
 
     return res.json({
@@ -269,9 +272,12 @@ authRouter.post('/google', authGoogleRateLimiter, async (req, res, next) => {
       return fail(res, 403, 'account_inactive', 'Your account has been deactivated. Please contact support.')
     }
 
+    user.lastLoginAt = new Date()
+    await user.save()
+
     recordAuditLog({
       action: created ? 'REGISTER' : 'GOOGLE_LOGIN',
-      actorType: 'CUSTOMER',
+      actorType: actorTypeForRole(user.role),
       actorId: user._id,
       actorEmail: user.email,
       resourceType: 'USER',
@@ -373,7 +379,7 @@ authRouter.patch('/profile', requireAuth, async (req, res, next) => {
   }
 })
 
-// 6. Request Password Reset Link
+// 6. Request Password Reset Link (no email enumeration; never return token)
 authRouter.post('/forgot-password', authPasswordResetRateLimiter, async (req, res, next) => {
   try {
     const emailIssue = emailError(req.body?.email)
@@ -382,41 +388,47 @@ authRouter.post('/forgot-password', authPasswordResetRateLimiter, async (req, re
     const email = normalizeEmail(req.body.email)
     const user = await User.findOne({ email })
 
-    if (!user) {
+    const generic = {
+      success: true,
+      message:
+        'If an account exists for that email, password reset instructions have been sent. Check your inbox.',
+      emailDeliveryConfigured: isEmailDeliveryConfigured(),
+    }
+
+    if (!user || !user.passwordHash) {
       recordAuditLog({
         action: 'PASSWORD_RESET_REQUEST',
         actorType: 'ANONYMOUS',
         actorEmail: email,
         resourceType: 'USER',
-        result: 'FAILURE',
-        reason: 'Account not found for email',
+        result: 'INFO',
+        reason: 'Reset requested for unknown or passwordless account (no enumeration)',
         req,
       })
-      return fail(res, 404, 'unknown_email', 'We couldn’t find an account with that email.')
+      return res.json(generic)
     }
 
-    const token = createResetToken()
-    user.resetTokenHash = hashToken(token)
-    user.resetTokenExpires = new Date(Date.now() + TOKEN_TTL_MS)
+    const token = createSecureToken()
+    user.resetTokenHash = hashSecureToken(token)
+    user.resetTokenExpires = resetTokenExpiry()
     await user.save()
+
+    const resetUrl = `${clientOrigin()}/reset-password?token=${encodeURIComponent(token)}`
+    const emailResult = await sendPasswordResetEmail({ to: email, resetUrl })
 
     recordAuditLog({
       action: 'PASSWORD_RESET_REQUEST',
-      actorType: 'CUSTOMER',
+      actorType: actorTypeForRole(user.role),
       actorId: user._id,
       actorEmail: user.email,
       resourceType: 'USER',
       resourceId: String(user._id),
       result: 'SUCCESS',
       req,
+      metadata: { emailSent: Boolean(emailResult.sent) },
     })
 
-    return res.json({
-      success: true,
-      email,
-      token,
-      message: 'Password reset instructions sent.',
-    })
+    return res.json(generic)
   } catch (error) {
     next(error)
   }
@@ -431,7 +443,7 @@ authRouter.get('/reset-password', async (req, res, next) => {
     }
 
     const user = await User.findOne({
-      resetTokenHash: hashToken(token),
+      resetTokenHash: hashSecureToken(token),
       resetTokenExpires: { $gt: new Date() },
     })
 
@@ -457,7 +469,7 @@ authRouter.post('/reset-password', authPasswordResetRateLimiter, async (req, res
     if (passIssue) return fail(res, 400, 'weak_password', passIssue)
 
     const user = await User.findOne({
-      resetTokenHash: hashToken(token),
+      resetTokenHash: hashSecureToken(token),
       resetTokenExpires: { $gt: new Date() },
     })
 
@@ -476,11 +488,12 @@ authRouter.post('/reset-password', authPasswordResetRateLimiter, async (req, res
     user.passwordHash = await bcrypt.hash(String(req.body.password), SALT_ROUNDS)
     user.resetTokenHash = ''
     user.resetTokenExpires = null
+    user.authVersion = Number(user.authVersion || 0) + 1
     await user.save()
 
     recordAuditLog({
       action: 'PASSWORD_RESET_SUCCESS',
-      actorType: 'CUSTOMER',
+      actorType: actorTypeForRole(user.role),
       actorId: user._id,
       actorEmail: user.email,
       resourceType: 'USER',
@@ -488,6 +501,20 @@ authRouter.post('/reset-password', authPasswordResetRateLimiter, async (req, res
       result: 'SUCCESS',
       req,
     })
+
+    if (isStaffRole(user.role)) {
+      recordAuditLog({
+        action: 'ADMIN_PASSWORD_CHANGED',
+        actorType: 'ADMIN',
+        actorId: user._id,
+        actorEmail: user.email,
+        resourceType: 'USER',
+        resourceId: String(user._id),
+        result: 'SUCCESS',
+        reason: 'Password reset completed',
+        req,
+      })
+    }
 
     return res.json({
       success: true,
@@ -503,7 +530,7 @@ authRouter.post('/reset-password', authPasswordResetRateLimiter, async (req, res
 authRouter.post('/logout', requireAuth, (req, res) => {
   recordAuditLog({
     action: 'LOGOUT',
-    actorType: String(req.user?.role || '').toUpperCase() === 'ADMIN' ? 'ADMIN' : 'CUSTOMER',
+    actorType: actorTypeForRole(req.user?.role),
     actorId: req.user?._id,
     actorEmail: req.user?.email,
     resourceType: 'USER',

@@ -1,5 +1,6 @@
 import { fail } from '../utils/auth.js'
 import { recordAuditLog } from '../services/auditLogger.js'
+import { hasPermission, isStaffRole, PERMISSIONS } from '../utils/adminRoles.js'
 
 export function requireAdmin(req, res, next) {
   if (!req.user) {
@@ -17,7 +18,7 @@ export function requireAdmin(req, res, next) {
 
   const role = String(req.user.role || '').toUpperCase()
 
-  if (role !== 'ADMIN') {
+  if (!isStaffRole(role)) {
     recordAuditLog({
       action: 'AUTHORIZATION_DENIED',
       actorType: 'CUSTOMER',
@@ -26,7 +27,7 @@ export function requireAdmin(req, res, next) {
       resourceType: 'SYSTEM',
       resourceId: req.originalUrl || req.url,
       result: 'DENIED',
-      reason: `Customer role "${role}" denied administrative access`,
+      reason: `Role "${role}" denied administrative access`,
       req,
     })
     return fail(
@@ -39,3 +40,41 @@ export function requireAdmin(req, res, next) {
 
   return next()
 }
+
+export function requirePermission(permission) {
+  return function requirePermissionMiddleware(req, res, next) {
+    if (!req.user) {
+      return fail(res, 401, 'unauthenticated', 'Please log in to continue.')
+    }
+
+    const role = String(req.user.role || '').toUpperCase()
+    if (!hasPermission(role, permission)) {
+      recordAuditLog({
+        action: 'AUTHORIZATION_DENIED',
+        actorType: isStaffRole(role) ? 'ADMIN' : 'CUSTOMER',
+        actorId: req.user._id,
+        actorEmail: req.user.email,
+        resourceType: 'SYSTEM',
+        resourceId: req.originalUrl || req.url,
+        result: 'DENIED',
+        reason: `Missing permission ${permission}`,
+        req,
+        metadata: { permission, role },
+      })
+      return fail(
+        res,
+        403,
+        'forbidden_permission',
+        'Access denied. You do not have permission to perform this action.',
+      )
+    }
+
+    return next()
+  }
+}
+
+export function requireSuperAdmin(req, res, next) {
+  return requirePermission(PERMISSIONS.ACCESS_MANAGE)(req, res, next)
+}
+
+export { PERMISSIONS }

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { permissionsForRole, roleLabel } from '../utils/adminRoles.js'
 
 const userSchema = new mongoose.Schema(
   {
@@ -40,7 +41,7 @@ const userSchema = new mongoose.Schema(
     role: {
       type: String,
       enum: {
-        values: ['CUSTOMER', 'ADMIN'],
+        values: ['CUSTOMER', 'ADMIN', 'SUPER_ADMIN'],
         message: '{VALUE} is not a valid role',
       },
       default: 'CUSTOMER',
@@ -56,6 +57,16 @@ const userSchema = new mongoose.Schema(
       default: 'ACTIVE',
       index: true,
       set: (v) => (typeof v === 'string' ? v.toUpperCase() : v),
+    },
+    /** Bumped on password change / deactivate to invalidate existing JWTs. */
+    authVersion: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    lastLoginAt: {
+      type: Date,
+      default: null,
     },
     resetTokenHash: {
       type: String,
@@ -77,17 +88,37 @@ const userSchema = new mongoose.Schema(
 )
 
 userSchema.methods.toPublic = function toPublic() {
+  const role = (this.role || 'CUSTOMER').toUpperCase()
   return {
     id: String(this._id),
     name: this.name,
     email: this.email,
     phone: this.phone || '',
-    role: (this.role || 'CUSTOMER').toUpperCase(),
+    role,
+    roleLabel: roleLabel(role),
     status: (this.status || 'ACTIVE').toUpperCase(),
+    permissions: permissionsForRole(role),
     hasPassword: Boolean(this.passwordHash),
     provider: (this.provider || 'PASSWORD').toUpperCase(),
+    lastLoginAt: this.lastLoginAt || null,
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
+  }
+}
+
+userSchema.methods.toAdminListItem = function toAdminListItem() {
+  const role = (this.role || 'CUSTOMER').toUpperCase()
+  return {
+    id: String(this._id),
+    name: this.name,
+    email: this.email,
+    role,
+    roleLabel: roleLabel(role),
+    status: (this.status || 'ACTIVE').toUpperCase(),
+    lastLoginAt: this.lastLoginAt || null,
+    createdAt: this.createdAt,
+    updatedAt: this.updatedAt,
+    hasPassword: Boolean(this.passwordHash),
   }
 }
 

@@ -51,6 +51,23 @@ export async function requireAuth(req, res, next) {
       return fail(res, 401, 'unauthenticated', 'User account no longer exists. Please log in again.')
     }
 
+    const tokenVersion = Number(payload.av ?? 0)
+    const currentVersion = Number(user.authVersion ?? 0)
+    if (tokenVersion !== currentVersion) {
+      recordAuditLog({
+        action: 'AUTHORIZATION_DENIED',
+        actorType: 'ANONYMOUS',
+        actorId: user._id,
+        actorEmail: user.email,
+        resourceType: 'USER',
+        resourceId: String(user._id),
+        result: 'DENIED',
+        reason: 'Session invalidated (authVersion mismatch)',
+        req,
+      })
+      return fail(res, 401, 'session_revoked', 'Your session is no longer valid. Please log in again.')
+    }
+
     const status = String(user.status || 'ACTIVE').toUpperCase()
     if (status === 'SUSPENDED' || status === 'INACTIVE') {
       recordAuditLog({

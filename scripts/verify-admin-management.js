@@ -3,6 +3,9 @@ import bcrypt from 'bcryptjs'
 import { connectDb } from '../src/config/db.js'
 import { User, Product, Category, Cart, Address, Order, Settings } from '../src/models/index.js'
 
+import crypto from "node:crypto"
+const DEV_ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || crypto.randomBytes(18).toString("base64url")
+
 const BASE_URL = process.env.TEST_API_URL || 'http://localhost:5000/api'
 
 let passed = 0
@@ -78,7 +81,7 @@ async function runAdminManagementVerification() {
 
     // 3. Create Administrator
     const adminEmail = `admin_${testSuffix}@example.com`
-    const adminPasswordHash = await bcrypt.hash('Admin@123', 12)
+    const adminPasswordHash = await bcrypt.hash(DEV_ADMIN_PASSWORD, 12)
     const adminUser = await User.create({
       name: 'Operations Admin',
       email: adminEmail,
@@ -94,7 +97,7 @@ async function runAdminManagementVerification() {
       method: 'POST',
       body: JSON.stringify({
         email: adminEmail,
-        password: 'Admin@123',
+        password: DEV_ADMIN_PASSWORD,
       }),
     })
     adminToken = adminLoginRes.data?.token || adminLoginRes.data?.data?.token

@@ -16,6 +16,7 @@ import { adminCategoriesRouter } from './adminCategories.js'
 import { adminCustomersRouter } from './adminCustomers.js'
 import { adminDashboardRouter } from './adminDashboard.js'
 import { adminSettingsRouter } from './adminSettings.js'
+import { adminAccessRouter } from './adminAccess.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireAdmin } from '../middleware/requireAdmin.js'
 import { User } from '../models/User.js'
@@ -56,6 +57,7 @@ apiRouter.use('/admin/categories', adminCategoriesRouter)
 apiRouter.use('/admin/customers', adminCustomersRouter)
 apiRouter.use('/admin/dashboard', adminDashboardRouter)
 apiRouter.use('/admin/settings', adminSettingsRouter)
+apiRouter.use('/admin/access', adminAccessRouter)
 
 // Lightweight test endpoints specifically for verifying Cases 1-7 authorization rules
 apiRouter.get('/test/protected', requireAuth, (req, res) => {
@@ -91,22 +93,31 @@ apiRouter.post('/test/create-admin', async (req, res) => {
   if (process.env.NODE_ENV === 'production') {
     return res.status(403).json({ success: false, message: 'Disabled in production' })
   }
-  const { email, password, name } = req.body || {}
+  const { email, password, name, role } = req.body || {}
   const normalizedEmail = String(email || '').trim().toLowerCase()
+  if (!normalizedEmail || !password) {
+    return fail(res, 400, 'invalid_body', 'email and password are required')
+  }
+
+  const adminRole = String(role || 'SUPER_ADMIN').toUpperCase() === 'ADMIN' ? 'ADMIN' : 'SUPER_ADMIN'
 
   let user = await User.findOne({ email: normalizedEmail })
   if (user) {
-    user.role = 'ADMIN'
+    user.role = adminRole
+    user.status = 'ACTIVE'
+    user.passwordHash = await bcrypt.hash(String(password), 12)
+    user.authVersion = Number(user.authVersion || 0) + 1
     await user.save()
   } else {
     user = await User.create({
       name: name || 'Admin Test',
       email: normalizedEmail,
       phone: '9876543200',
-      passwordHash: await bcrypt.hash(password || 'Admin@123', 12),
-      role: 'ADMIN',
+      passwordHash: await bcrypt.hash(String(password), 12),
+      role: adminRole,
       status: 'ACTIVE',
       provider: 'PASSWORD',
+      authVersion: 0,
     })
   }
 

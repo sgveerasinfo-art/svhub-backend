@@ -95,7 +95,8 @@ export async function initiateRefund({
       }
     }
   } else if (normRole === 'admin') {
-    const isAdmin = user && (String(user.role).toUpperCase() === 'ADMIN' || String(user.role).toLowerCase() === 'admin')
+    const role = String(user?.role || '').toUpperCase()
+    const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN'
     if (!isAdmin) {
       return {
         success: false,

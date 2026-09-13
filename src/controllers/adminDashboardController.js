@@ -2,6 +2,7 @@ import { User } from '../models/User.js'
 import { Product } from '../models/Product.js'
 import { Order } from '../models/Order.js'
 import { Settings } from '../models/Settings.js'
+import { customerRoleFilter } from '../utils/adminRoles.js'
 
 const STATUS_DISPLAY_MAP = {
   PENDING_PAYMENT: 'Pending',
@@ -62,8 +63,8 @@ export async function getAdminDashboard(req, res, next) {
       storefrontRevenueAgg,
       topItemAgg,
     ] = await Promise.all([
-      User.countDocuments({ role: { $ne: 'ADMIN' } }),
-      User.countDocuments({ role: { $ne: 'ADMIN' }, status: { $in: ['ACTIVE', 'VIP'] } }),
+      User.countDocuments(customerRoleFilter()),
+      User.countDocuments({ ...customerRoleFilter(), status: { $in: ['ACTIVE', 'VIP'] } }),
       Product.countDocuments(),
       Product.countDocuments({ isActive: true }),
       Order.countDocuments(),
