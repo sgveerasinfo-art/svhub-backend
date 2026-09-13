@@ -10,6 +10,12 @@ import { restoreOrderInventory } from '../utils/inventory.js'
 import { initiateRefund } from '../services/refundReconciliationService.js'
 import { recordAuditLog } from '../services/auditLogger.js'
 import { cancelOrder } from '../services/orderCancellationService.js'
+import {
+  validateAndQuote,
+  buildOrderCouponSnapshot,
+  reserveCouponRedemption,
+} from '../services/couponService.js'
+import { normalizeCouponCode } from '../models/Coupon.js'
 
 export function formatPublicOrder(order) {
   const cancelHistory = Array.isArray(order.history)
@@ -43,6 +49,17 @@ export function formatPublicOrder(order) {
     subtotal: order.subtotal,
     shippingFee: order.shippingFee,
     discount: order.discount,
+    coupon: order.coupon
+      ? {
+          code: order.coupon.code,
+          discountType: order.coupon.discountType,
+          discountValue: order.coupon.discountValue,
+          maxDiscount: order.coupon.maxDiscount ?? null,
+          discountAmount: order.coupon.discountAmount,
+          productScope: order.coupon.productScope,
+          customerEligibility: order.coupon.customerEligibility,
+        }
+      : null,
     totalAmount: order.totalAmount,
     status: order.status,
     cancellationReason: cancelHistory?.note || null,
@@ -334,39 +351,110 @@ export async function createOrder(req, res, next) {
       }
     }
 
-    const discount = 0 // Future promo / coupon code
-    const totalAmount = subtotal + shippingFee - discount
+    // Coupon: revalidate server-side from cart (body couponCode may override if it matches a valid quote)
+    const bodyCouponCode = normalizeCouponCode(req.body?.couponCode)
+    const cartCouponCode = normalizeCouponCode(cart.appliedCouponCode)
+    const couponCodeToApply = bodyCouponCode || cartCouponCode
+
+    let discount = 0
+    let couponSnapshot = null
+    let couponQuote = null
+
+    if (couponCodeToApply) {
+      if (bodyCouponCode && cartCouponCode && bodyCouponCode !== cartCouponCode) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'coupon_mismatch',
+            message: 'Coupon on the request does not match the coupon applied to your cart.',
+          },
+        })
+      }
+
+      const couponResult = await validateAndQuote({
+        code: couponCodeToApply,
+        cartItems: cart.items,
+        userId,
+      })
+
+      if (!couponResult.ok) {
+        return res.status(400).json({
+          success: false,
+          error: couponResult.error,
+        })
+      }
+
+      couponQuote = couponResult.quote
+      discount = couponQuote.discountAmount
+      couponSnapshot = buildOrderCouponSnapshot(couponQuote)
+    }
+
+    const totalAmount = Math.max(0, subtotal + shippingFee - discount)
 
     // 5. Generate Atomic Sequential Order Number
     const seq = await Counter.getNextSequence('order_number')
     const orderNumber = `#SVH-${seq}`
 
-    // 6. Create Application Order Document
+    // 6. Create Application Order Document + optional RESERVED coupon redemption
     // CRITICAL: Stock is NOT deducted in Phase 1.5; Cart is NOT cleared in Phase 1.5
-    const order = await Order.create({
-      orderNumber,
-      userId,
-      customerName: shippingAddress.name || req.user.name,
-      email: req.user.email,
-      phone: shippingAddress.phone || req.user.phone || '',
-      shippingAddress,
-      items: orderItems,
-      subtotal,
-      shippingFee,
-      discount,
-      totalAmount,
-      status: 'PENDING_PAYMENT',
-      paymentStatus: 'PENDING',
-      expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      notes: typeof req.body?.notes === 'string' ? req.body.notes.trim() : '',
-      history: [
-        {
-          status: 'PENDING_PAYMENT',
-          at: new Date(),
-          note: 'Application order created; awaiting gateway payment initiation',
-        },
-      ],
-    })
+    // Coupon stays on cart until payment success so retries can re-use the same code.
+    let order
+    try {
+      order = await Order.create({
+        orderNumber,
+        userId,
+        customerName: shippingAddress.name || req.user.name,
+        email: req.user.email,
+        phone: shippingAddress.phone || req.user.phone || '',
+        shippingAddress,
+        items: orderItems,
+        subtotal,
+        shippingFee,
+        discount,
+        coupon: couponSnapshot,
+        totalAmount,
+        status: 'PENDING_PAYMENT',
+        paymentStatus: 'PENDING',
+        expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        notes: typeof req.body?.notes === 'string' ? req.body.notes.trim() : '',
+        history: [
+          {
+            status: 'PENDING_PAYMENT',
+            at: new Date(),
+            note: couponSnapshot
+              ? `Application order created with coupon ${couponSnapshot.code}; awaiting gateway payment initiation`
+              : 'Application order created; awaiting gateway payment initiation',
+          },
+        ],
+      })
+
+      if (couponQuote) {
+        // Re-check limits immediately before reserve to reduce race window
+        const recheck = await validateAndQuote({
+          code: couponQuote.code,
+          cartItems: cart.items,
+          userId,
+          excludeOrderId: order._id,
+        })
+        if (!recheck.ok) {
+          await Order.deleteOne({ _id: order._id })
+          return res.status(400).json({
+            success: false,
+            error: recheck.error,
+          })
+        }
+        await reserveCouponRedemption({
+          quote: couponQuote,
+          userId,
+          orderId: order._id,
+        })
+      }
+    } catch (createErr) {
+      if (order?._id) {
+        await Order.deleteOne({ _id: order._id }).catch(() => {})
+      }
+      throw createErr
+    }
 
     recordAuditLog({
       action: 'ORDER_CREATED',

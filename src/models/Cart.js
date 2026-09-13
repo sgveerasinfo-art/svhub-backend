@@ -36,6 +36,12 @@ const cartSchema = new mongoose.Schema(
       type: [cartItemSchema],
       default: [],
     },
+    appliedCouponCode: {
+      type: String,
+      default: null,
+      uppercase: true,
+      trim: true,
+    },
   },
   {
     timestamps: true,

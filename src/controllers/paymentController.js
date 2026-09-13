@@ -11,6 +11,7 @@ import { deductOrderInventory } from '../utils/inventory.js'
 import { formatPublicOrder } from './orderController.js'
 import { fulfillRazorpayPayment } from '../services/paymentFulfillmentService.js'
 import { recordAuditLog } from '../services/auditLogger.js'
+import { releaseCouponForOrder } from '../services/couponService.js'
 
 /**
  * 1. Create Razorpay Order (POST /api/payments/razorpay/create-order)
@@ -372,6 +373,7 @@ export async function recordPaymentFailure(req, res, next) {
         note: `Payment attempt failed or cancelled: ${errorReason || 'Checkout cancelled by customer'}`,
       })
       await order.save()
+      await releaseCouponForOrder(order._id).catch(() => {})
     }
 
     if (razorpay_order_id) {

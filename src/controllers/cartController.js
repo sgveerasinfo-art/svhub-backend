@@ -1,17 +1,77 @@
 import mongoose from 'mongoose'
 import { Cart } from '../models/Cart.js'
 import { Product } from '../models/Product.js'
+import {
+  validateAndQuote,
+  formatAppliedCoupon,
+  listAvailableCouponsForCart,
+  couponErrorMessage,
+} from '../services/couponService.js'
+import { normalizeCouponCode } from '../models/Coupon.js'
 
 const PRODUCT_CART_PROJECTION =
   'name slug type category storefront image isActive variants.variantId variants.label variants.weight variants.sku variants.price variants.originalPrice variants.discount variants.qty variants.isActive'
 
-export async function populateCart(cart) {
+async function attachCouponQuote(cart, resolved, userId) {
+  const code = cart?.appliedCouponCode ? normalizeCouponCode(cart.appliedCouponCode) : ''
+  if (!code) {
+    return {
+      ...resolved,
+      appliedCouponCode: null,
+      appliedCoupon: null,
+      couponMessage: null,
+    }
+  }
+
+  if (!resolved.items || resolved.items.length === 0) {
+    if (cart.appliedCouponCode) {
+      cart.appliedCouponCode = null
+      await cart.save()
+    }
+    return {
+      ...resolved,
+      appliedCouponCode: null,
+      appliedCoupon: null,
+      couponMessage: 'Coupon removed because your cart is empty.',
+    }
+  }
+
+  const result = await validateAndQuote({
+    code,
+    cartItems: cart.items,
+    userId,
+  })
+
+  if (!result.ok) {
+    cart.appliedCouponCode = null
+    await cart.save()
+    return {
+      ...resolved,
+      appliedCouponCode: null,
+      appliedCoupon: null,
+      couponMessage: result.error?.message || couponErrorMessage(result.error?.code),
+      couponError: result.error,
+    }
+  }
+
+  return {
+    ...resolved,
+    appliedCouponCode: result.quote.code,
+    appliedCoupon: formatAppliedCoupon(result.quote),
+    couponMessage: null,
+  }
+}
+
+export async function populateCart(cart, { userId = null } = {}) {
   if (!cart || !Array.isArray(cart.items) || cart.items.length === 0) {
     return {
       id: cart ? String(cart._id) : null,
       items: [],
       count: 0,
       subtotal: 0,
+      appliedCouponCode: null,
+      appliedCoupon: null,
+      couponMessage: null,
     }
   }
 
@@ -73,12 +133,14 @@ export async function populateCart(cart) {
     totalSubtotal += lineTotal
   }
 
-  return {
+  const base = {
     id: String(cart._id),
     items: resolvedItems,
     count: totalCount,
     subtotal: totalSubtotal,
   }
+
+  return attachCouponQuote(cart, base, userId || cart.userId)
 }
 
 async function findOrCreateCart(userId) {
@@ -106,7 +168,7 @@ function findCartLine(cart, targetId) {
 export async function getCart(req, res, next) {
   try {
     const cart = await Cart.findOne({ userId: req.user._id })
-    const resolved = await populateCart(cart)
+    const resolved = await populateCart(cart, { userId: req.user._id })
     res.json({
       success: true,
       data: resolved,
@@ -440,7 +502,7 @@ export async function clearCart(req, res, next) {
   try {
     const cart = await Cart.findOneAndUpdate(
       { userId: req.user._id },
-      { $set: { items: [] } },
+      { $set: { items: [], appliedCouponCode: null } },
       { new: true },
     )
 
@@ -451,6 +513,9 @@ export async function clearCart(req, res, next) {
         items: [],
         count: 0,
         subtotal: 0,
+        appliedCouponCode: null,
+        appliedCoupon: null,
+        couponMessage: null,
       },
     })
   } catch (err) {
@@ -525,6 +590,96 @@ export async function mergeCart(req, res, next) {
         throw error
       }
     }
+  } catch (err) {
+    next(err)
+  }
+}
+
+// 7. Apply coupon code to cart
+export async function applyCartCoupon(req, res, next) {
+  try {
+    const code = normalizeCouponCode(req.body?.code)
+    if (!code) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'coupon_missing_code', message: 'Enter a coupon code.' },
+      })
+    }
+
+    const cart = await findOrCreateCart(req.user._id)
+    if (!cart.items || cart.items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'coupon_empty_cart',
+          message: 'Add items to your cart before applying a coupon.',
+        },
+      })
+    }
+
+    const previousCode = cart.appliedCouponCode ? normalizeCouponCode(cart.appliedCouponCode) : null
+    const result = await validateAndQuote({
+      code,
+      cartItems: cart.items,
+      userId: req.user._id,
+    })
+
+    if (!result.ok) {
+      return res.status(400).json({
+        success: false,
+        error: result.error,
+      })
+    }
+
+    cart.appliedCouponCode = result.quote.code
+    await cart.save()
+
+    const resolved = await populateCart(cart, { userId: req.user._id })
+    const replaced = Boolean(previousCode && previousCode !== result.quote.code)
+
+    res.json({
+      success: true,
+      data: resolved,
+      meta: {
+        replaced,
+        message: replaced
+          ? 'Replaced previous coupon'
+          : result.quote.message,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+// 8. Remove applied coupon from cart
+export async function removeCartCoupon(req, res, next) {
+  try {
+    const cart = await Cart.findOne({ userId: req.user._id })
+    if (cart) {
+      cart.appliedCouponCode = null
+      await cart.save()
+    }
+    const resolved = await populateCart(cart, { userId: req.user._id })
+    res.json({
+      success: true,
+      data: resolved,
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+// 9. List coupons that currently apply to this cart
+export async function getAvailableCartCoupons(req, res, next) {
+  try {
+    const cart = await Cart.findOne({ userId: req.user._id })
+    const items = cart?.items || []
+    const coupons = await listAvailableCouponsForCart({
+      cartItems: items,
+      userId: req.user._id,
+    })
+    res.json({ success: true, data: coupons })
   } catch (err) {
     next(err)
   }

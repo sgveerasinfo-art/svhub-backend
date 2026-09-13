@@ -166,6 +166,26 @@ const orderSchema = new mongoose.Schema(
       default: 0,
       min: [0, 'Discount cannot be negative'],
     },
+    coupon: {
+      type: new mongoose.Schema(
+        {
+          couponId: { type: mongoose.Schema.Types.ObjectId, ref: 'Coupon', default: null },
+          code: { type: String, default: null, trim: true, uppercase: true },
+          discountType: { type: String, enum: ['PERCENTAGE', 'FIXED', null], default: null },
+          discountValue: { type: Number, default: null, min: 0 },
+          maxDiscount: { type: Number, default: null, min: 0 },
+          discountAmount: { type: Number, default: 0, min: 0 },
+          productScope: { type: String, enum: ['ALL', 'SELECTED', null], default: null },
+          customerEligibility: {
+            type: String,
+            enum: ['ALL', 'NEW', 'EXISTING', null],
+            default: null,
+          },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
     totalAmount: {
       type: Number,
       required: [true, 'Total amount is required'],
@@ -292,5 +312,7 @@ orderSchema.virtual('totals').get(function () {
     grandTotal: this.totalAmount,
   }
 })
+
+orderSchema.index({ 'coupon.code': 1 })
 
 export const Order = mongoose.model('Order', orderSchema)

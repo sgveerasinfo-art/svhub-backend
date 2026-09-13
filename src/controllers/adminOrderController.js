@@ -202,6 +202,17 @@ export function formatAdminOrder(order) {
     shippingFee: doc.shippingFee,
     shipping: doc.shippingFee,
     discount: doc.discount || 0,
+    coupon: doc.coupon
+      ? {
+          code: doc.coupon.code,
+          discountType: doc.coupon.discountType,
+          discountValue: doc.coupon.discountValue,
+          maxDiscount: doc.coupon.maxDiscount ?? null,
+          discountAmount: doc.coupon.discountAmount,
+          productScope: doc.coupon.productScope,
+          customerEligibility: doc.coupon.customerEligibility,
+        }
+      : null,
     tax: 0,
     totalAmount: doc.totalAmount,
     total: doc.totalAmount,
@@ -249,6 +260,7 @@ export async function getAdminOrders(req, res, next) {
       dateFrom,
       dateTo,
       sort,
+      couponCode,
     } = req.query
 
     const page = Math.max(1, parseInt(rawPage, 10) || 1)
@@ -287,6 +299,11 @@ export async function getAdminOrders(req, res, next) {
     // Storefront filter
     if (storefront && storefront !== 'all') {
       query['items.storefront'] = storefront
+    }
+
+    // Coupon code filter
+    if (couponCode && typeof couponCode === 'string' && couponCode.trim()) {
+      query['coupon.code'] = String(couponCode).trim().toUpperCase()
     }
 
     // Date range filter

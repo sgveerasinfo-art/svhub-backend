@@ -9,6 +9,7 @@ import {
 } from '../config/razorpay.js'
 import { deductOrderInventory } from '../utils/inventory.js'
 import { recordAuditLog } from './auditLogger.js'
+import { redeemCouponForOrder, releaseCouponForOrder } from './couponService.js'
 
 /**
  * Shared Payment Reconciliation & Fulfillment Engine (SV Hub Phase 2.4B)
@@ -515,6 +516,11 @@ export async function fulfillRazorpayPayment({
       })
       await order.save({ session })
 
+      // 6b. Redeem coupon reservation (counts usage only on successful payment)
+      if (order.coupon?.couponId || order.discount > 0) {
+        await redeemCouponForOrder(order._id, session)
+      }
+
       // 7. Selective Cart Clearing: Remove only purchased items, preserving unrelated newly added items
       const cart = await Cart.findOne({ userId: order.userId }).session(session)
       if (cart && Array.isArray(cart.items) && cart.items.length > 0) {
@@ -524,6 +530,11 @@ export async function fulfillRazorpayPayment({
         cart.items = cart.items.filter(
           (i) => !purchasedKeys.has(`${String(i.productId)}::${i.variantId}`),
         )
+        // Clear applied coupon after successful payment (retries no longer needed)
+        cart.appliedCouponCode = null
+        await cart.save({ session })
+      } else if (cart?.appliedCouponCode) {
+        cart.appliedCouponCode = null
         await cart.save({ session })
       }
 
@@ -684,6 +695,9 @@ export async function recordWebhookPaymentFailure({
     })
     await order.save().catch(() => {})
   }
+
+  // Free reserved coupon slot so another checkout can use the code
+  await releaseCouponForOrder(order._id).catch(() => {})
 
   return {
     success: true,

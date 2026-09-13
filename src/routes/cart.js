@@ -7,6 +7,9 @@ import {
   removeCartItem,
   clearCart,
   mergeCart,
+  applyCartCoupon,
+  removeCartCoupon,
+  getAvailableCartCoupons,
 } from '../controllers/cartController.js'
 
 const cartRouter = Router()
@@ -20,5 +23,8 @@ cartRouter.patch('/items/:id', updateCartItem)
 cartRouter.delete('/items/:id', removeCartItem)
 cartRouter.delete('/', clearCart)
 cartRouter.post('/merge', mergeCart)
+cartRouter.post('/coupon', applyCartCoupon)
+cartRouter.delete('/coupon', removeCartCoupon)
+cartRouter.get('/coupons/available', getAvailableCartCoupons)
 
 export { cartRouter }

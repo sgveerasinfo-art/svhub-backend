@@ -13,6 +13,7 @@ import { refundsRouter } from './refunds.js'
 import { adminOrdersRouter } from './adminOrders.js'
 import { adminProductsRouter } from './adminProducts.js'
 import { adminCategoriesRouter } from './adminCategories.js'
+import { adminCouponsRouter } from './adminCoupons.js'
 import { adminCustomersRouter } from './adminCustomers.js'
 import { adminDashboardRouter } from './adminDashboard.js'
 import { adminSettingsRouter } from './adminSettings.js'
@@ -52,6 +53,7 @@ apiRouter.use('/admin/orders', adminOrdersRouter)
 // Phase 1.8 Admin Catalog & Category Management Routes
 apiRouter.use('/admin/products', adminProductsRouter)
 apiRouter.use('/admin/categories', adminCategoriesRouter)
+apiRouter.use('/admin/coupons', adminCouponsRouter)
 
 // Phase 1.9 Admin Customers, Dashboard & Settings Routes
 apiRouter.use('/admin/customers', adminCustomersRouter)
