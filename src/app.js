@@ -25,9 +25,29 @@ app.use((req, res, next) => {
 const productionOrigins = [
   'https://svhub.shop',
   'https://www.svhub.shop',
-  env.CLIENT_ORIGIN,
-  env.CLIENT_URL,
-].filter(Boolean)
+]
+
+function isProductionFrontendOrigin(origin) {
+  if (!origin) return false
+  try {
+    const url = new URL(origin)
+    if (url.protocol !== 'https:') return false
+    const host = url.hostname.toLowerCase()
+    if (host === 'svhub.shop' || host === 'www.svhub.shop') return true
+    // Allow explicitly configured custom production domains (not localhost / vercel previews)
+    if (host.endsWith('.vercel.app')) return false
+    if (host === 'localhost' || host === '127.0.0.1') return false
+    return true
+  } catch {
+    return false
+  }
+}
+
+for (const candidate of [env.CLIENT_ORIGIN, env.CLIENT_URL]) {
+  if (isProductionFrontendOrigin(candidate) && !productionOrigins.includes(candidate)) {
+    productionOrigins.push(candidate)
+  }
+}
 
 const developmentOrigins = [
   ...productionOrigins,
@@ -35,10 +55,12 @@ const developmentOrigins = [
   'http://127.0.0.1:5173',
   'http://localhost:4173',
   'http://127.0.0.1:4173',
+  env.CLIENT_ORIGIN,
+  env.CLIENT_URL,
 ].filter(Boolean)
 
 const isProduction = env.NODE_ENV === 'production'
-const allowedOrigins = isProduction ? productionOrigins : developmentOrigins
+const allowedOrigins = [...new Set(isProduction ? productionOrigins : developmentOrigins)]
 
 function isAllowedOrigin(origin) {
   if (!origin) return true
