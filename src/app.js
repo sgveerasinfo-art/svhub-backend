@@ -21,33 +21,43 @@ app.use((req, res, next) => {
   next()
 })
 
-// CORS Configuration
-const allowedOrigins = [
-  env.CLIENT_ORIGIN,
-  env.CLIENT_URL,
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'https://svhub-frontend-nine.vercel.app',
+// CORS Configuration — production allowlist only; localhost/preview only outside production
+const productionOrigins = [
   'https://svhub.shop',
   'https://www.svhub.shop',
+  env.CLIENT_ORIGIN,
+  env.CLIENT_URL,
 ].filter(Boolean)
+
+const developmentOrigins = [
+  ...productionOrigins,
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+].filter(Boolean)
+
+const isProduction = env.NODE_ENV === 'production'
+const allowedOrigins = isProduction ? productionOrigins : developmentOrigins
 
 function isAllowedOrigin(origin) {
   if (!origin) return true
   if (allowedOrigins.includes(origin)) return true
-  if (origin.endsWith('.vercel.app')) return true
-  if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return true
-  if (/^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)) return true
+  if (!isProduction) {
+    if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return true
+    if (/^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)) return true
+  }
   return false
 }
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (isAllowedOrigin(origin) || env.NODE_ENV === 'development') {
+      if (isAllowedOrigin(origin)) {
         return callback(null, true)
       }
-      return callback(new Error('Blocked by CORS policy'))
+      // Reject without throwing — avoids CORS denials becoming HTTP 500
+      return callback(null, false)
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

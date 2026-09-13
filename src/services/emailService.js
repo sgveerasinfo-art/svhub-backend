@@ -1,25 +1,80 @@
 /**
  * Outbound email delivery.
  *
- * No SMTP provider is wired yet. Configure one of:
- * - SMTP_URL (e.g. smtp://user:pass@host:587)
- * - RESEND_API_KEY + EMAIL_FROM
+ * Configure ONE of:
+ * - RESEND_API_KEY (+ optional EMAIL_FROM)
+ * - SMTP_URL (smtp://user:pass@host:587) — requires `nodemailer` package
+ * - EMAIL_PROVIDER=console (dev only; marks sent without real delivery)
  *
- * Until configured, send* helpers return { sent: false } and never log secrets/tokens.
+ * Never logs raw reset/invitation tokens or passwords.
  */
 
 import { env } from '../config/env.js'
 
 export function isEmailDeliveryConfigured() {
-  return Boolean(
-    process.env.SMTP_URL ||
-      process.env.RESEND_API_KEY ||
-      process.env.EMAIL_PROVIDER === 'console',
-  )
+  if (process.env.EMAIL_PROVIDER === 'console') return true
+  if (process.env.RESEND_API_KEY) return true
+  if (process.env.SMTP_URL) return true
+  return false
 }
 
 function fromAddress() {
   return process.env.EMAIL_FROM || process.env.SUPPORT_EMAIL || 'noreply@svhub.shop'
+}
+
+async function sendViaResend({ to, subject, text, html }) {
+  const apiKey = process.env.RESEND_API_KEY
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: fromAddress(),
+      to: [to],
+      subject,
+      text,
+      html: html || undefined,
+    }),
+  })
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    console.error('[email] resend_failed', {
+      status: response.status,
+      // Never log full provider body if it might echo recipient content with tokens
+      hint: body ? 'provider_error' : 'empty_body',
+    })
+    return { sent: false, reason: 'resend_failed' }
+  }
+
+  return { sent: true }
+}
+
+async function sendViaSmtp({ to, subject, text, html }) {
+  let nodemailer
+  try {
+    nodemailer = await import('nodemailer')
+  } catch {
+    console.error('[email] smtp_unavailable', { reason: 'nodemailer_not_installed' })
+    return { sent: false, reason: 'smtp_dependency_missing' }
+  }
+
+  const transporter = nodemailer.createTransport(process.env.SMTP_URL)
+  try {
+    await transporter.sendMail({
+      from: fromAddress(),
+      to,
+      subject,
+      text,
+      html,
+    })
+    return { sent: true }
+  } catch (error) {
+    console.error('[email] smtp_failed', { code: error?.code || 'smtp_error' })
+    return { sent: false, reason: 'smtp_failed' }
+  }
 }
 
 /**
@@ -34,31 +89,33 @@ export async function sendEmail(payload) {
     return { sent: false, reason: 'email_not_configured' }
   }
 
-  // Development console sink — never print tokens (caller must pass redacted text if needed).
-  if (process.env.EMAIL_PROVIDER === 'console' || env.NODE_ENV !== 'production') {
-    if (process.env.EMAIL_PROVIDER === 'console') {
-      console.info('[email] queued', {
-        to,
-        subject: payload.subject,
-        from: fromAddress(),
-      })
-    }
-    // Still not a real delivery unless EMAIL_PROVIDER=console intentionally.
-    if (process.env.EMAIL_PROVIDER === 'console') {
-      return { sent: true }
-    }
+  if (process.env.EMAIL_PROVIDER === 'console') {
+    console.info('[email] queued', {
+      to,
+      subject: payload.subject,
+      from: fromAddress(),
+    })
+    return { sent: true }
   }
 
-  // Provider adapters can be added here without changing call sites.
-  return { sent: false, reason: 'email_provider_not_implemented' }
+  if (process.env.RESEND_API_KEY) {
+    return sendViaResend(payload)
+  }
+
+  if (process.env.SMTP_URL) {
+    return sendViaSmtp(payload)
+  }
+
+  return { sent: false, reason: 'email_not_configured' }
 }
 
 export async function sendPasswordResetEmail({ to, resetUrl }) {
+  // resetUrl contains the secret token — never log it.
   return sendEmail({
     to,
     subject: 'Reset your SV Hub password',
     text: `Use this link to reset your password (expires soon):\n\n${resetUrl}\n\nIf you did not request this, ignore this email.`,
-    html: `<p>Use this link to reset your password (expires soon):</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>If you did not request this, ignore this email.</p>`,
+    html: `<p>Use this link to reset your password (expires soon):</p><p><a href="${resetUrl}">Reset password</a></p><p>If you did not request this, ignore this email.</p>`,
   })
 }
 
@@ -67,6 +124,9 @@ export async function sendAdminInvitationEmail({ to, setupUrl, name }) {
     to,
     subject: 'You are invited to SV Hub Admin',
     text: `Hello ${name || ''},\n\nYou have been invited to the SV Hub Admin panel. Create your password here (link expires):\n\n${setupUrl}\n\nIf you were not expecting this, ignore this email.`,
-    html: `<p>Hello ${name || ''},</p><p>You have been invited to the SV Hub Admin panel. Create your password using this link (expires soon):</p><p><a href="${setupUrl}">${setupUrl}</a></p><p>If you were not expecting this, ignore this email.</p>`,
+    html: `<p>Hello ${name || ''},</p><p>You have been invited to the SV Hub Admin panel. Create your password using this link (expires soon):</p><p><a href="${setupUrl}">Accept invitation</a></p><p>If you were not expecting this, ignore this email.</p>`,
   })
 }
+
+// Keep env import used for future NODE_ENV checks without unused lint noise in some setups
+void env
