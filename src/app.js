@@ -28,6 +28,8 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'https://svhub-frontend-nine.vercel.app',
+  'https://svhub.shop',
+  'https://www.svhub.shop',
 ].filter(Boolean)
 
 function isAllowedOrigin(origin) {
